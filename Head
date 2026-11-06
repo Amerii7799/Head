@@ -1,0 +1,388 @@
+-- Amer Menu: Inf Jump + Aimbot (head lock) + ESP (single Script)
+-- جا: StarterPlayer > StarterPlayerScripts  و  RunContext = Client
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+-- ===== settings =====
+local JUMP_COOLDOWN = 0.1
+local AIM_PART      = "Head"
+local AIM_FOV       = 250      -- px radius from screen center
+local AIM_SMOOTH    = 0.65     -- 0..1 (1 = instant snap)
+local PREDICTION    = 0.06     -- seconds of target velocity lead (0 = off)
+local MAX_DISTANCE  = 1000     -- studs
+local TEAM_CHECK    = true
+local INCLUDE_NPCS  = true
+
+local ENEMY_COLOR = Color3.fromRGB(255, 60, 60)
+local TEAM_COLOR  = Color3.fromRGB(60, 255, 120)
+local ON_COLOR    = Color3.fromRGB(46, 160, 67)
+local OFF_COLOR   = Color3.fromRGB(170, 50, 50)
+
+-- ===== state =====
+local state = { infJump = false, aimbot = false, esp = false, wallAim = false }
+local ready = false
+
+-- ===== gui root =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "AmerGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- ===== intro splash =====
+local splash = Instance.new("Frame")
+splash.Size = UDim2.fromScale(1, 1)
+splash.BackgroundColor3 = Color3.new(0, 0, 0)
+splash.BackgroundTransparency = 0.2
+splash.ZIndex = 100
+splash.Parent = gui
+
+local emblem = Instance.new("TextLabel")
+emblem.AnchorPoint = Vector2.new(0.5, 0.5)
+emblem.Position = UDim2.fromScale(0.5, 0.28)
+emblem.Size = UDim2.fromScale(0.2, 0.14)
+emblem.BackgroundTransparency = 1
+emblem.Text = "✦"
+emblem.Font = Enum.Font.GothamBlack
+emblem.TextScaled = true
+emblem.TextColor3 = Color3.fromRGB(255, 200, 60)
+emblem.ZIndex = 101
+emblem.Parent = splash
+
+local title = Instance.new("TextLabel")
+title.AnchorPoint = Vector2.new(0.5, 0.5)
+title.Position = UDim2.fromScale(0.5, 0.48)
+title.Size = UDim2.fromScale(0.8, 0.28)
+title.BackgroundTransparency = 1
+title.Text = "عامر"
+title.Font = Enum.Font.Arimo -- Gotham has no Arabic/Persian glyphs
+title.TextScaled = true
+title.TextColor3 = Color3.new(1, 1, 1)
+title.ZIndex = 101
+title.Parent = splash
+
+local titleEn = Instance.new("TextLabel")
+titleEn.AnchorPoint = Vector2.new(0.5, 0.5)
+titleEn.Position = UDim2.fromScale(0.5, 0.7)
+titleEn.Size = UDim2.fromScale(0.5, 0.09)
+titleEn.BackgroundTransparency = 1
+titleEn.Text = "A M E R"
+titleEn.Font = Enum.Font.GothamBold
+titleEn.TextScaled = true
+titleEn.TextColor3 = Color3.fromRGB(255, 200, 60)
+titleEn.ZIndex = 101
+titleEn.Parent = splash
+
+-- ===== menu =====
+local menu = Instance.new("Frame")
+menu.Size = UDim2.fromOffset(150, 190)
+menu.Position = UDim2.new(0, 12, 0.5, -95)
+menu.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+menu.BackgroundTransparency = 0.15
+menu.Visible = false
+menu.Parent = gui
+Instance.new("UICorner", menu).CornerRadius = UDim.new(0, 10)
+
+local header = Instance.new("TextLabel")
+header.Size = UDim2.new(1, 0, 0, 26)
+header.BackgroundTransparency = 1
+header.Text = "✦ Amer"
+header.Font = Enum.Font.GothamBold
+header.TextSize = 16
+header.TextColor3 = Color3.new(1, 1, 1)
+header.Parent = menu
+
+-- drag via header (touch + mouse)
+do
+	local dragging, dragStart, startPos
+	header.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, dragStart, startPos = true, i.Position, menu.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dragStart
+			menu.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+local fovCircle = Instance.new("Frame")
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.Size = UDim2.fromOffset(AIM_FOV * 2, AIM_FOV * 2)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = false
+fovCircle.Parent = gui
+Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+local stroke = Instance.new("UIStroke", fovCircle)
+stroke.Color = Color3.new(1, 1, 1)
+stroke.Transparency = 0.5
+stroke.Thickness = 1.5
+
+local function makeToggle(label, y, key, onChange)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -16, 0, 34)
+	btn.Position = UDim2.new(0, 8, 0, y)
+	btn.BackgroundColor3 = OFF_COLOR
+	btn.TextColor3 = Color3.new(1, 1, 1)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 14
+	btn.Text = label .. ": OFF"
+	btn.Parent = menu
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+	btn.Activated:Connect(function()
+		state[key] = not state[key]
+		btn.Text = label .. ": " .. (state[key] and "ON" or "OFF")
+		btn.BackgroundColor3 = state[key] and ON_COLOR or OFF_COLOR
+		if onChange then onChange(state[key]) end
+	end)
+end
+
+-- ===== targets cache =====
+local targets = {}
+local function refreshTargets()
+	local list = {}
+	if INCLUDE_NPCS then
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("Humanoid") and d.Parent and d.Parent ~= player.Character then
+				table.insert(list, d)
+			end
+		end
+	else
+		for _, p in ipairs(Players:GetPlayers()) do
+			local h = p ~= player and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+			if h then table.insert(list, h) end
+		end
+	end
+	targets = list
+end
+
+local function isTeammate(model)
+	local plr = Players:GetPlayerFromCharacter(model)
+	return TEAM_CHECK and plr ~= nil and plr.Team ~= nil and plr.Team == player.Team
+end
+
+-- ===== ESP =====
+-- fix: BillboardGui under a ScreenGui never renders -> now parented to the target's Head.
+-- Box adornment has no 31-highlight cap, so ESP still shows when Highlights run out.
+local espObjs = {} -- [model] = { hl, box, bb, label, hum, root }
+
+local function clearESP(model)
+	local o = espObjs[model]
+	if not o then return end
+	for _, k in ipairs({ "hl", "box", "bb" }) do
+		if o[k] then o[k]:Destroy() end
+	end
+	espObjs[model] = nil
+end
+
+local function clearAllESP()
+	for model in pairs(espObjs) do clearESP(model) end
+end
+
+local function addESP(hum)
+	local model = hum.Parent
+	if not model or espObjs[model] then return end
+	local root = model:FindFirstChild("HumanoidRootPart")
+	local head = model:FindFirstChild("Head") or root
+	if not root then return end
+
+	local hl = Instance.new("Highlight")
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.FillTransparency = 0.6
+	hl.OutlineTransparency = 0
+	hl.FillColor = ENEMY_COLOR
+	hl.OutlineColor = Color3.new(1, 1, 1)
+	hl.Parent = model
+
+	local box = Instance.new("BoxHandleAdornment")
+	box.Adornee = root
+	box.Size = Vector3.new(4, 6, 2)
+	box.AlwaysOnTop = true
+	box.ZIndex = 5
+	box.Transparency = 0.65
+	box.Color3 = ENEMY_COLOR
+	box.Parent = root
+
+	local bb = Instance.new("BillboardGui")
+	bb.Adornee = head
+	bb.AlwaysOnTop = true
+	bb.Size = UDim2.fromOffset(170, 40)
+	bb.StudsOffset = Vector3.new(0, 2.5, 0)
+	bb.Parent = head
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 13
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeTransparency = 0.3
+	label.Parent = bb
+
+	espObjs[model] = { hl = hl, box = box, bb = bb, label = label, hum = hum, root = root }
+end
+
+local function updateESP()
+	local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not myRoot then return end
+
+	for _, hum in ipairs(targets) do
+		local model = hum.Parent
+		if model and hum.Health > 0 and not espObjs[model] then
+			local root = model:FindFirstChild("HumanoidRootPart")
+			if root and (root.Position - myRoot.Position).Magnitude <= MAX_DISTANCE then
+				addESP(hum)
+			end
+		end
+	end
+
+	for model, o in pairs(espObjs) do
+		local root = o.root
+		if not model.Parent or not root or not root.Parent or o.hum.Health <= 0
+			or (root.Position - myRoot.Position).Magnitude > MAX_DISTANCE then
+			clearESP(model)
+		else
+			local col = isTeammate(model) and TEAM_COLOR or ENEMY_COLOR
+			o.hl.FillColor = col
+			o.box.Color3 = col
+			o.label.TextColor3 = col
+			local dist = math.floor((root.Position - myRoot.Position).Magnitude)
+			o.label.Text = string.format("%s\n%d HP | %dm", model.Name, math.floor(o.hum.Health), dist)
+		end
+	end
+end
+
+-- ===== menu toggles =====
+makeToggle("Inf Jump", 30, "infJump")
+makeToggle("Aimbot", 68, "aimbot", function(on)
+	fovCircle.Visible = on
+	if on then refreshTargets() end
+end)
+makeToggle("ESP", 106, "esp", function(on)
+	if on then refreshTargets() else clearAllESP() end
+end)
+makeToggle("Wall Aim", 144, "wallAim")
+
+-- ===== inf jump =====
+local lastJump = 0
+UserInputService.JumpRequest:Connect(function()
+	if not ready or not state.infJump then return end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 and os.clock() - lastJump >= JUMP_COOLDOWN then
+		lastJump = os.clock()
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end)
+
+-- ===== aimbot: sticky head lock + prediction =====
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local locked = nil -- current locked Humanoid
+
+local function aimPartOf(hum)
+	local model = hum.Parent
+	return model and (model:FindFirstChild(AIM_PART) or model:FindFirstChild("HumanoidRootPart"))
+end
+
+-- returns part if hum is a valid target right now (alive, in range, in FOV, visible)
+local function validTarget(hum, myRoot, center)
+	local model = hum.Parent
+	local part = model and aimPartOf(hum)
+	if not part or hum.Health <= 0 or isTeammate(model) then return nil end
+	if (part.Position - myRoot.Position).Magnitude > MAX_DISTANCE then return nil end
+
+	local sp, onScreen = camera:WorldToViewportPoint(part.Position)
+	if not onScreen then return nil end
+	local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+	if d > AIM_FOV then return nil end
+
+	if not state.wallAim then
+		local origin = camera.CFrame.Position
+		local hit = Workspace:Raycast(origin, part.Position - origin, rayParams)
+		if hit and not hit.Instance:IsDescendantOf(model) then return nil end
+	end
+	return part, d
+end
+
+local function aimStep()
+	if not ready or not state.aimbot then locked = nil return end
+	camera = Workspace.CurrentCamera
+	local myChar = player.Character
+	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+	if not myRoot then return end
+
+	rayParams.FilterDescendantsInstances = { myChar }
+	local vp = camera.ViewportSize
+	local center = Vector2.new(vp.X / 2, vp.Y / 2)
+
+	-- keep current lock while still valid
+	local part
+	if locked then part = validTarget(locked, myRoot, center) end
+
+	-- else pick closest-to-crosshair
+	if not part then
+		locked = nil
+		local bestD = math.huge
+		for _, hum in ipairs(targets) do
+			local p, d = validTarget(hum, myRoot, center)
+			if p and d < bestD then
+				bestD, part, locked = d, p, hum
+			end
+		end
+	end
+
+	if part then
+		local aimPos = part.Position + part.AssemblyLinearVelocity * PREDICTION
+		local pos = camera.CFrame.Position
+		camera.CFrame = camera.CFrame:Lerp(CFrame.new(pos, aimPos), AIM_SMOOTH)
+	end
+end
+
+-- run right after the default camera script so it doesn't fight us
+RunService:BindToRenderStep("AmerAim", Enum.RenderPriority.Camera.Value + 1, aimStep)
+
+-- ===== background loops =====
+task.spawn(function()
+	while true do
+		if state.aimbot or state.esp then refreshTargets() end
+		task.wait(1)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if ready and state.esp then updateESP() end
+		task.wait(0.15)
+	end
+end)
+
+-- ===== intro sequence =====
+task.delay(3, function()
+	local ti = TweenInfo.new(0.5)
+	TweenService:Create(splash, ti, { BackgroundTransparency = 1 }):Play()
+	TweenService:Create(title, ti, { TextTransparency = 1 }):Play()
+	TweenService:Create(titleEn, ti, { TextTransparency = 1 }):Play()
+	TweenService:Create(emblem, ti, { TextTransparency = 1 }):Play()
+	task.wait(0.5)
+	splash:Destroy()
+	menu.Visible = true
+	ready = true
+end)
